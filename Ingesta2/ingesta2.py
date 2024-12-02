@@ -2,16 +2,32 @@ import boto3
 import csv
 import os
 import time
+import argparse
+
+# Configuración de argparse para obtener parámetros
+parser = argparse.ArgumentParser(description='Script para ejecutar la ingesta de datos')
+
+# Parámetros de entrada
+parser.add_argument('--stage', required=True, help="Indica el stage (por ejemplo, dev, prod)")
+parser.add_argument('--bucket', required=True, help="Indica el nombre del bucket S3")
+
+# Parsear los argumentos
+args = parser.parse_args()
+
+# Usamos los valores de los argumentos
+stage = args.stage
+nombre_bucket = args.bucket
+
 
 dynamodb = boto3.resource('dynamodb', region_name='us-east-1')
 s3 = boto3.client('s3', region_name='us-east-1')
 glue = boto3.client('glue', region_name='us-east-1')
 
-tabla_dynamo = 'dev-hotel-services'  # Tabla de servicios
-nombre_bucket = 'ingesta-hotel-stage-dev'
-archivo_csv = 'stage-prod-services.csv'
-glue_database = 'stage-prod'
-glue_table_name = 'stage-prod-services'
+tabla_dynamo = f"{stage}-hotel-services"  # Tabla de servicios
+archivo_csv = f"{stage}-services.csv"    # Archivo CSV para servicios
+glue_database = f"{stage}-glue-database" # Base de datos de Glue
+glue_table_name = f"{stage}-services-table"  # Tabla de Glue
+
 
 
 def exportar_dynamodb_a_csv(tabla_dynamo, archivo_csv):
@@ -35,16 +51,32 @@ def exportar_dynamodb_a_csv(tabla_dynamo, archivo_csv):
                 except ValueError:
                     service_id = ''
 
-                row = [
-                    item.get('tenant_id', ''),
-                    service_id,
-                    item.get('service_category', ''),
-                    item.get('service_name', ''),
-                    item.get('descripcion', ''),
-                    item.get('precio', '')
-                ]
+                # Si el campo 'descripcion' tiene saltos de línea, los eliminamos o reemplazamos
+                descripcion = item.get('descripcion', '').replace('\n', ' ').replace('\r', '')
 
-                escritor_csv.writerow(row)
+                # Si el campo 'service_ids' es una lista (relación muchos a uno), desnormalizamos
+                if 'service_ids' in item and isinstance(item['service_ids'], list):
+                    for sid in item['service_ids']:  # Desnormalizar la lista de servicios
+                        row = [
+                            item.get('tenant_id', ''),
+                            sid,  # Cada 'service_id' será una fila por separado
+                            item.get('service_category', ''),
+                            item.get('service_name', ''),
+                            descripcion,  # Usar la descripción con los saltos de línea reemplazados
+                            item.get('precio', '')
+                        ]
+                        escritor_csv.writerow(row)
+                else:
+                    # Si no es una lista, solo escribimos una fila normal
+                    row = [
+                        item.get('tenant_id', ''),
+                        service_id,
+                        item.get('service_category', ''),
+                        item.get('service_name', ''),
+                        descripcion,  # Usar la descripción con los saltos de línea reemplazados
+                        item.get('precio', '')
+                    ]
+                    escritor_csv.writerow(row)
 
             if 'LastEvaluatedKey' in respuesta:
                 scan_kwargs['ExclusiveStartKey'] = respuesta['LastEvaluatedKey']
@@ -136,4 +168,4 @@ if __name__ == "__main__":
     else:
         print("Error en la creación de la base de datos Glue. No se continuará con el proceso.")
 
-    print("Proceso completado.");
+    print("Proceso completado.")

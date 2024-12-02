@@ -7,4 +7,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . /app/
 
-CMD ["python", "./ingesta4.py"]
+ENTRYPOINT ["python", "./ingesta4.py"]

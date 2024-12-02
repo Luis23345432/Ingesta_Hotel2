@@ -2,16 +2,31 @@ import boto3
 import csv
 import os
 import time
+import argparse
+
+# Configuración de argparse para obtener parámetros
+parser = argparse.ArgumentParser(description='Script para ejecutar la ingesta de datos')
+
+# Parámetros de entrada
+parser.add_argument('--stage', required=True, help="Indica el stage (por ejemplo, dev, prod)")
+parser.add_argument('--bucket', required=True, help="Indica el nombre del bucket S3")
+
+# Parsear los argumentos
+args = parser.parse_args()
+
+# Usamos los valores de los argumentos
+stage = args.stage
+nombre_bucket = args.bucket
+
 
 dynamodb = boto3.resource('dynamodb', region_name='us-east-1')
 s3 = boto3.client('s3', region_name='us-east-1')
 glue = boto3.client('glue', region_name='us-east-1')
 
-tabla_dynamo = 'dev-hotel-users'  # Tabla de usuarios
-nombre_bucket = 'ingesta-hotel-stage-dev'
-archivo_csv = 'stage-prod-usuarios.csv'
-glue_database = 'stage-prod'
-glue_table_name = 'stage-prod-usuarios'
+tabla_dynamo = f'{stage}-hotel-users'  # Tabla de usuarios
+archivo_csv = f'{stage}-usuarios.csv'
+glue_database = f'{stage}-glue-database'  # Nuevo nombre para la base de datos de Glue
+glue_table_name = f'{stage}-usuarios-table'  # Nuevo nombre para la tabla de Glue
 
 
 def exportar_dynamodb_a_csv(tabla_dynamo, archivo_csv):
@@ -19,6 +34,7 @@ def exportar_dynamodb_a_csv(tabla_dynamo, archivo_csv):
     tabla = dynamodb.Table(tabla_dynamo)
     scan_kwargs = {}
 
+    # Abrimos el archivo CSV en modo escritura
     with open(archivo_csv, 'w', newline='') as archivo:
         escritor_csv = csv.writer(archivo)
 
@@ -35,6 +51,8 @@ def exportar_dynamodb_a_csv(tabla_dynamo, archivo_csv):
                 except ValueError:
                     user_id = ''
 
+                # Puedes agregar una lógica de desnormalización si tienes listas (por ejemplo, servicios o comentarios)
+                # Aquí no es necesario porque no hay listas explícitas en la tabla de usuarios.
                 row = [
                     item.get('tenant_id', ''),
                     user_id,
@@ -105,7 +123,7 @@ def registrar_datos_en_glue(glue_database, glue_table_name, nombre_bucket, archi
                         {'Name': 'nombre', 'Type': 'string'},
                         {'Name': 'email', 'Type': 'string'},
                         {'Name': 'password_hash', 'Type': 'string'},
-                        {'Name': 'fecha_registro', 'Type': 'string'}
+                        {'Name': 'fecha_registro', 'Type': 'timestamp'}
                     ],
                     'Location': input_path,
                     'InputFormat': 'org.apache.hadoop.mapred.TextInputFormat',
@@ -136,4 +154,4 @@ if __name__ == "__main__":
     else:
         print("Error en la creación de la base de datos Glue. No se continuará con el proceso.")
 
-    print("Proceso completado.");
+    print("Proceso completado.")

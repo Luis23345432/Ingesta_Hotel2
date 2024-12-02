@@ -2,16 +2,32 @@ import boto3
 import csv
 import os
 import time
+import argparse
+
+# Configuración de argparse para obtener parámetros
+parser = argparse.ArgumentParser(description='Script para ejecutar la ingesta de datos')
+
+# Parámetros de entrada
+parser.add_argument('--stage', required=True, help="Indica el stage (por ejemplo, dev, prod)")
+parser.add_argument('--bucket', required=True, help="Indica el nombre del bucket S3")
+
+# Parsear los argumentos
+args = parser.parse_args()
+
+# Usamos los valores de los argumentos
+stage = args.stage
+nombre_bucket = args.bucket
+
 
 dynamodb = boto3.resource('dynamodb', region_name='us-east-1')
 s3 = boto3.client('s3', region_name='us-east-1')
 glue = boto3.client('glue', region_name='us-east-1')
 
-tabla_dynamo = 'dev-hotel-payments'  # Tabla de pagos
-nombre_bucket = 'ingesta-hotel-stage-dev'
-archivo_csv = 'stage-prod-payments.csv'
-glue_database = 'stage-prod'
-glue_table_name = 'stage-prod-payments'
+tabla_dynamo = f"{stage}-hotel-payments"  # Tabla de pagos
+archivo_csv = f"{stage}-payments.csv"    # Archivo CSV para pagos
+glue_database = f"{stage}-glue-database" # Base de datos de Glue
+glue_table_name = f"{stage}-payments-table"  # Tabla de Glue
+
 
 
 def exportar_dynamodb_a_csv(tabla_dynamo, archivo_csv):
@@ -32,16 +48,24 @@ def exportar_dynamodb_a_csv(tabla_dynamo, archivo_csv):
             for item in items:
                 try:
                     payment_id = item.get('payment_id', '')
+                    monto_pago = item.get('monto_pago', '')
+                    created_at = item.get('created_at', '')
+                    # Convertir 'created_at' a formato timestamp si es necesario
+                    if created_at:
+                        created_at = str(created_at)  # Asegurarse de que sea un string
+                    else:
+                        created_at = ''
                 except ValueError:
                     payment_id = ''
+                    monto_pago = ''
+                    created_at = ''
 
                 row = [
                     item.get('tenant_id', ''),
                     payment_id,
-                    item.get('user_id', ''),
                     item.get('reservation_id', ''),
-                    item.get('monto_pago', ''),
-                    item.get('created_at', ''),
+                    monto_pago,  # Dejar monto_pago como string si es necesario
+                    created_at,  # Usar 'created_at' como string
                     item.get('status', '')
                 ]
 
@@ -103,10 +127,9 @@ def registrar_datos_en_glue(glue_database, glue_table_name, nombre_bucket, archi
                     'Columns': [
                         {'Name': 'tenant_id', 'Type': 'string'},
                         {'Name': 'payment_id', 'Type': 'string'},
-                        {'Name': 'user_id', 'Type': 'string'},
                         {'Name': 'reservation_id', 'Type': 'string'},
-                        {'Name': 'monto_pago', 'Type': 'string'},
-                        {'Name': 'created_at', 'Type': 'string'},
+                        {'Name': 'monto_pago', 'Type': 'decimal'},  # Cambiar a 'decimal' si es numérico
+                        {'Name': 'created_at', 'Type': 'timestamp'},  # Usar 'timestamp' para fechas
                         {'Name': 'status', 'Type': 'string'}
                     ],
                     'Location': input_path,
@@ -138,4 +161,4 @@ if __name__ == "__main__":
     else:
         print("Error en la creación de la base de datos Glue. No se continuará con el proceso.")
 
-    print("Proceso completado.");
+    print("Proceso completado.")

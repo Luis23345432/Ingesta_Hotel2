@@ -2,16 +2,32 @@ import boto3
 import csv
 import os
 import time
+import argparse
+
+# Configuración de argparse para obtener parámetros
+parser = argparse.ArgumentParser(description='Script para ejecutar la ingesta de datos')
+
+# Parámetros de entrada
+parser.add_argument('--stage', required=True, help="Indica el stage (por ejemplo, dev, prod)")
+parser.add_argument('--bucket', required=True, help="Indica el nombre del bucket S3")
+
+# Parsear los argumentos
+args = parser.parse_args()
+
+# Usamos los valores de los argumentos
+stage = args.stage
+nombre_bucket = args.bucket
+
 
 dynamodb = boto3.resource('dynamodb', region_name='us-east-1')
 s3 = boto3.client('s3', region_name='us-east-1')
 glue = boto3.client('glue', region_name='us-east-1')
 
-tabla_dynamo = 'dev-hotel-reservations'  # Tabla de reservas
-nombre_bucket = 'ingesta-hotel-stage-dev'
-archivo_csv = 'stage-prod-reservations.csv'
-glue_database = 'stage-prod'
-glue_table_name = 'stage-prod-reservations'
+tabla_dynamo = f"{stage}-hotel-reservations"  # Tabla de reservas
+archivo_csv = f"{stage}-reservations.csv"    # Archivo CSV para reservas
+glue_database = f"{stage}-glue-database" # Base de datos de Glue
+glue_table_name = f"{stage}-reservations-table"  # Tabla de Glue
+
 
 
 def exportar_dynamodb_a_csv(tabla_dynamo, archivo_csv):
@@ -19,6 +35,7 @@ def exportar_dynamodb_a_csv(tabla_dynamo, archivo_csv):
     tabla = dynamodb.Table(tabla_dynamo)
     scan_kwargs = {}
 
+    # Abrimos el archivo CSV en modo escritura
     with open(archivo_csv, 'w', newline='') as archivo:
         escritor_csv = csv.writer(archivo)
 
@@ -32,21 +49,25 @@ def exportar_dynamodb_a_csv(tabla_dynamo, archivo_csv):
             for item in items:
                 try:
                     reservation_id = item.get('reservation_id', '')
+                    service_ids = item.get('service_ids', [])
+                    # Convertir la lista de 'service_ids' a una cadena separada por ';' para evitar problemas con comas
+                    service_ids_str = ';'.join(service_ids) if isinstance(service_ids, list) else service_ids
                 except ValueError:
                     reservation_id = ''
+                    service_ids_str = ''
 
                 row = [
                     item.get('tenant_id', ''),
                     reservation_id,
                     item.get('user_id', ''),
                     item.get('room_id', ''),
-                    item.get('service_ids', ''),
+                    service_ids_str,  # Usar ';' como delimitador para service_ids
                     item.get('start_date', ''),
                     item.get('end_date', ''),
-                    item.get('created_at', ''),
                     item.get('status', '')
                 ]
 
+                # Escribimos la fila de datos en el CSV sin encabezados
                 escritor_csv.writerow(row)
 
             if 'LastEvaluatedKey' in respuesta:
@@ -107,10 +128,9 @@ def registrar_datos_en_glue(glue_database, glue_table_name, nombre_bucket, archi
                         {'Name': 'reservation_id', 'Type': 'string'},
                         {'Name': 'user_id', 'Type': 'string'},
                         {'Name': 'room_id', 'Type': 'string'},
-                        {'Name': 'service_ids', 'Type': 'string'},
+                        {'Name': 'service_ids', 'Type': 'string'},  # Cambio: 'service_ids' es una cadena de IDs
                         {'Name': 'start_date', 'Type': 'string'},
                         {'Name': 'end_date', 'Type': 'string'},
-                        {'Name': 'created_at', 'Type': 'string'},
                         {'Name': 'status', 'Type': 'string'}
                     ],
                     'Location': input_path,
@@ -119,7 +139,7 @@ def registrar_datos_en_glue(glue_database, glue_table_name, nombre_bucket, archi
                     'Compressed': False,
                     'SerdeInfo': {
                         'SerializationLibrary': 'org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe',
-                        'Parameters': {'field.delim': ','}
+                        'Parameters': {'field.delim': ','}  # Asegúrate de que el delimitador es ',' para todo
                     }
                 },
                 'TableType': 'EXTERNAL_TABLE',
@@ -142,4 +162,4 @@ if __name__ == "__main__":
     else:
         print("Error en la creación de la base de datos Glue. No se continuará con el proceso.")
 
-    print("Proceso completado.");
+    print("Proceso completado.")

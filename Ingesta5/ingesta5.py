@@ -2,16 +2,32 @@ import boto3
 import csv
 import os
 import time
+import argparse
+
+# Configuración de argparse para obtener parámetros
+parser = argparse.ArgumentParser(description='Script para ejecutar la ingesta de datos')
+
+# Parámetros de entrada
+parser.add_argument('--stage', required=True, help="Indica el stage (por ejemplo, dev, prod)")
+parser.add_argument('--bucket', required=True, help="Indica el nombre del bucket S3")
+
+# Parsear los argumentos
+args = parser.parse_args()
+
+# Usamos los valores de los argumentos
+stage = args.stage
+nombre_bucket = args.bucket
+
 
 dynamodb = boto3.resource('dynamodb', region_name='us-east-1')
 s3 = boto3.client('s3', region_name='us-east-1')
 glue = boto3.client('glue', region_name='us-east-1')
 
-tabla_dynamo = 'dev-hotel-comments'  # Tabla de comentarios
-nombre_bucket = 'ingesta-hotel-stage-dev'
-archivo_csv = 'stage-prod-comments.csv'
-glue_database = 'stage-prod'
-glue_table_name = 'stage-prod-comments'
+tabla_dynamo = f"{stage}-hotel-comments"  # Tabla de comentarios
+archivo_csv = f"{stage}-comments.csv"    # Archivo CSV para comentarios
+glue_database = f"{stage}-glue-database" # Base de datos de Glue
+glue_table_name = f"{stage}-comments-table"  # Tabla de Glue
+
 
 
 def exportar_dynamodb_a_csv(tabla_dynamo, archivo_csv):
@@ -19,6 +35,7 @@ def exportar_dynamodb_a_csv(tabla_dynamo, archivo_csv):
     tabla = dynamodb.Table(tabla_dynamo)
     scan_kwargs = {}
 
+    # Abrimos el archivo CSV en modo escritura
     with open(archivo_csv, 'w', newline='') as archivo:
         escritor_csv = csv.writer(archivo)
 
@@ -32,18 +49,26 @@ def exportar_dynamodb_a_csv(tabla_dynamo, archivo_csv):
             for item in items:
                 try:
                     comment_id = item.get('comment_id', '')
+                    # Asegurarse de que 'created_at' esté en formato correcto
+                    created_at = item.get('created_at', '')
+                    comment_text = item.get('comment_text', '')
+                    # Reemplazar saltos de línea o retornos de carro en 'comment_text'
+                    comment_text = comment_text.replace('\n', ' ').replace('\r', ' ') if comment_text else ''
                 except ValueError:
                     comment_id = ''
+                    created_at = ''
+                    comment_text = ''
 
                 row = [
                     item.get('tenant_id', ''),
                     comment_id,
                     item.get('room_id', ''),
                     item.get('user_id', ''),
-                    item.get('comment_text', ''),
-                    item.get('created_at', '')
+                    comment_text,  # Manejo del texto sin saltos de línea
+                    created_at  # 'created_at' como string
                 ]
 
+                # Escribimos la fila de datos en el CSV sin encabezados
                 escritor_csv.writerow(row)
 
             if 'LastEvaluatedKey' in respuesta:
@@ -105,7 +130,7 @@ def registrar_datos_en_glue(glue_database, glue_table_name, nombre_bucket, archi
                         {'Name': 'room_id', 'Type': 'string'},
                         {'Name': 'user_id', 'Type': 'string'},
                         {'Name': 'comment_text', 'Type': 'string'},
-                        {'Name': 'created_at', 'Type': 'string'}
+                        {'Name': 'created_at', 'Type': 'timestamp'}  # Usar 'timestamp' para fechas
                     ],
                     'Location': input_path,
                     'InputFormat': 'org.apache.hadoop.mapred.TextInputFormat',
@@ -136,4 +161,4 @@ if __name__ == "__main__":
     else:
         print("Error en la creación de la base de datos Glue. No se continuará con el proceso.")
 
-    print("Proceso completado.");
+    print("Proceso completado.")

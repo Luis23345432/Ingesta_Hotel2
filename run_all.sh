@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# Solicitar al usuario el stage y el bucket
+read -p "Ingrese el stage (por ejemplo, dev, test, prod): " stage
+read -p "Ingrese el nombre del bucket de S3: " bucket
+
 # Definir las carpetas y las imágenes Docker (diccionario)
 declare -A carpetas
 carpetas=(
@@ -23,9 +27,9 @@ for carpeta in "${!carpetas[@]}"; do
   # Construir la imagen Docker
   docker build -t $imagen .
 
-  # Ejecutar el contenedor Docker
+  # Ejecutar el contenedor Docker con los argumentos --stage y --bucket
   echo "Corriendo el contenedor para $carpeta con la imagen $imagen..."
-  docker run -v /home/ubuntu/.aws/credentials:/root/.aws/credentials $imagen
+  docker run -v /home/ubuntu/.aws/credentials:/root/.aws/credentials $imagen --stage "$stage" --bucket "$bucket"
 
   # Volver al directorio anterior
   cd ..

@@ -2,16 +2,39 @@ import boto3
 import csv
 import os
 import time
+import argparse
+
+# Configuración de argparse para obtener parámetros
+parser = argparse.ArgumentParser(description='Script para ejecutar la ingesta de datos')
+
+# Parámetros de entrada
+parser.add_argument('--stage', required=True, help="Indica el stage (por ejemplo, dev, prod)")
+parser.add_argument('--bucket', required=True, help="Indica el nombre del bucket S3")
+
+# Parsear los argumentos
+args = parser.parse_args()
+
+# Usamos los valores de los argumentos
+stage = args.stage
+nombre_bucket = args.bucket
+
 
 dynamodb = boto3.resource('dynamodb', region_name='us-east-1')
 s3 = boto3.client('s3', region_name='us-east-1')
 glue = boto3.client('glue', region_name='us-east-1')
 
-tabla_dynamo = 'dev-hotel-rooms'  # Tabla de habitaciones
-nombre_bucket = 'ingesta-hotel-stage-dev'
-archivo_csv = 'stage-prod-rooms.csv'
-glue_database = 'stage-prod'
-glue_table_name = 'stage-prod-rooms'
+tabla_dynamo = f"{stage}-hotel-rooms"  # Tabla de habitaciones
+archivo_csv = f"{stage}-rooms.csv"    # Archivo CSV para habitaciones
+glue_database = f"{stage}-glue-database" # Base de datos de Glue
+glue_table_name = f"{stage}-rooms-table"  # Tabla de Glue
+
+
+
+def limpiar_descripcion(descripcion):
+    """Elimina saltos de línea y reemplaza con un espacio."""
+    if descripcion:
+        return descripcion.replace('\n', ' ').replace('\r', '')
+    return descripcion
 
 
 def exportar_dynamodb_a_csv(tabla_dynamo, archivo_csv):
@@ -38,6 +61,9 @@ def exportar_dynamodb_a_csv(tabla_dynamo, archivo_csv):
                 # Obtener el atributo 'image'
                 image = item.get('image', '')
 
+                # Limpiar la descripción para eliminar saltos de línea
+                description = limpiar_descripcion(item.get('description', ''))
+
                 row = [
                     item.get('tenant_id', ''),
                     room_id,
@@ -45,10 +71,10 @@ def exportar_dynamodb_a_csv(tabla_dynamo, archivo_csv):
                     item.get('max_persons', ''),
                     item.get('room_type', ''),
                     item.get('price_per_night', ''),
-                    item.get('description', ''),
+                    description,  # Usar la descripción limpia
                     item.get('availability', ''),
                     item.get('created_at', ''),
-                    image  # Nueva columna 'image'
+                    image
                 ]
 
                 escritor_csv.writerow(row)
@@ -115,8 +141,8 @@ def registrar_datos_en_glue(glue_database, glue_table_name, nombre_bucket, archi
                         {'Name': 'price_per_night', 'Type': 'string'},
                         {'Name': 'description', 'Type': 'string'},
                         {'Name': 'availability', 'Type': 'string'},
-                        {'Name': 'created_at', 'Type': 'string'},
-                        {'Name': 'image', 'Type': 'string'}  # Nueva columna 'image'
+                        {'Name': 'created_at', 'Type': 'timestamp'},
+                        {'Name': 'image', 'Type': 'string'}
                     ],
                     'Location': input_path,
                     'InputFormat': 'org.apache.hadoop.mapred.TextInputFormat',
