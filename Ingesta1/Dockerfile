@@ -7,5 +7,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . /app/
 
-ENTRYPOINT ["python", "ingesta1.py"]
+RUN mkdir -p /logs
 
+ENTRYPOINT ["python", "ingesta1.py"]

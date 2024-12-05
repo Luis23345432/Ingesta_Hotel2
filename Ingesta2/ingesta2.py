@@ -3,6 +3,8 @@ import csv
 import os
 import time
 import argparse
+from loguru import logger
+from datetime import datetime
 
 # Configuración de argparse para obtener parámetros
 parser = argparse.ArgumentParser(description='Script para ejecutar la ingesta de datos')
@@ -18,7 +20,30 @@ args = parser.parse_args()
 stage = args.stage
 nombre_bucket = args.bucket
 
+# Configuración del Logger
+LOG_DIRECTORY = "/logs"
+CONTAINER_NAME = "Ingesta2"
 
+# Asegurarse de que el directorio de logs existe
+os.makedirs(LOG_DIRECTORY, exist_ok=True)
+
+LOG_FILE = os.path.join(LOG_DIRECTORY, f"{CONTAINER_NAME}.log")
+
+# Configurar el formato de log
+logger.remove()  # Eliminar cualquier configuración previa
+logger.add(
+    LOG_FILE,
+    format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level} | {extra[container]} | {message}",
+    level="INFO",
+    enqueue=True,
+    backtrace=True,
+    diagnose=True,
+)
+
+# Agregar información adicional (nombre del contenedor)
+logger = logger.bind(container=CONTAINER_NAME)
+
+# Inicializar los clientes de AWS
 dynamodb = boto3.resource('dynamodb', region_name='us-east-1')
 s3 = boto3.client('s3', region_name='us-east-1')
 glue = boto3.client('glue', region_name='us-east-1')
@@ -28,19 +53,22 @@ archivo_csv = f"{stage}-services.csv"    # Archivo CSV para servicios
 glue_database = f"{stage}-glue-database" # Base de datos de Glue
 glue_table_name = f"{stage}-services-table"  # Tabla de Glue
 
-
-
 def exportar_dynamodb_a_csv(tabla_dynamo, archivo_csv):
-    print(f"Exportando datos desde DynamoDB ({tabla_dynamo})...")
+    logger.info(f"Exportando datos desde DynamoDB ({tabla_dynamo})...")
     tabla = dynamodb.Table(tabla_dynamo)
     scan_kwargs = {}
 
+    # Abrimos el archivo CSV en modo escritura
     with open(archivo_csv, 'w', newline='') as archivo:
         escritor_csv = csv.writer(archivo)
 
         while True:
-            respuesta = tabla.scan(**scan_kwargs)
-            items = respuesta['Items']
+            try:
+                respuesta = tabla.scan(**scan_kwargs)
+                items = respuesta.get('Items', [])
+            except Exception as e:
+                logger.error(f"Error al escanear la tabla DynamoDB: {e}")
+                break
 
             if not items:
                 break
@@ -66,6 +94,7 @@ def exportar_dynamodb_a_csv(tabla_dynamo, archivo_csv):
                             item.get('precio', '')
                         ]
                         escritor_csv.writerow(row)
+                        logger.debug(f"Escribiendo fila desnormalizada: {row}")
                 else:
                     # Si no es una lista, solo escribimos una fila normal
                     row = [
@@ -77,52 +106,55 @@ def exportar_dynamodb_a_csv(tabla_dynamo, archivo_csv):
                         item.get('precio', '')
                     ]
                     escritor_csv.writerow(row)
+                    logger.debug(f"Escribiendo fila: {row}")
 
             if 'LastEvaluatedKey' in respuesta:
                 scan_kwargs['ExclusiveStartKey'] = respuesta['LastEvaluatedKey']
+                logger.info("Continuando con la siguiente página de resultados en DynamoDB.")
             else:
                 break
 
-    print(f"Datos exportados a {archivo_csv}")
-
+    logger.info(f"Datos exportados a {archivo_csv}")
 
 def subir_csv_a_s3(archivo_csv, nombre_bucket):
     carpeta_destino = 'services/'
     archivo_s3 = f"{carpeta_destino}{archivo_csv}"
-    print(f"Subiendo {archivo_csv} al bucket S3 ({nombre_bucket}) en la carpeta 'services'...")
+    logger.info(f"Subiendo {archivo_csv} al bucket S3 ({nombre_bucket}) en la carpeta 'services'...")
 
     try:
         s3.upload_file(archivo_csv, nombre_bucket, archivo_s3)
-        print(f"Archivo subido exitosamente a S3 en la carpeta 'services'.")
+        logger.info(f"Archivo subido exitosamente a S3 en la carpeta 'services'.")
         return True
     except Exception as e:
-        print(f"Error al subir el archivo a S3: {e}")
+        logger.error(f"Error al subir el archivo a S3: {e}")
         return False
-
 
 def crear_base_de_datos_en_glue(glue_database):
     """Crear base de datos en Glue si no existe."""
     try:
         glue.get_database(Name=glue_database)
-        print(f"La base de datos {glue_database} ya existe.")
+        logger.info(f"La base de datos {glue_database} ya existe.")
     except glue.exceptions.EntityNotFoundException:
-        print(f"La base de datos {glue_database} no existe. Creando base de datos...")
-        glue.create_database(
-            DatabaseInput={
-                'Name': glue_database,
-                'Description': 'Base de datos para almacenamiento de servicios en Glue.'
-            }
-        )
-        print(f"Base de datos {glue_database} creada exitosamente.")
+        logger.warning(f"La base de datos {glue_database} no existe. Creando base de datos...")
+        try:
+            glue.create_database(
+                DatabaseInput={
+                    'Name': glue_database,
+                    'Description': 'Base de datos para almacenamiento de servicios en Glue.'
+                }
+            )
+            logger.info(f"Base de datos {glue_database} creada exitosamente.")
+        except Exception as e:
+            logger.error(f"Error al crear la base de datos en Glue: {e}")
+            return False
     except Exception as e:
-        print(f"Error al verificar o crear la base de datos en Glue: {e}")
+        logger.error(f"Error al verificar o crear la base de datos en Glue: {e}")
         return False
     return True
 
-
 def registrar_datos_en_glue(glue_database, glue_table_name, nombre_bucket, archivo_csv):
     """Registrar datos en Glue Data Catalog."""
-    print(f"Registrando datos en Glue Data Catalog...")
+    logger.info(f"Registrando datos en Glue Data Catalog...")
     input_path = f"s3://{nombre_bucket}/services/"
 
     try:
@@ -152,20 +184,23 @@ def registrar_datos_en_glue(glue_database, glue_table_name, nombre_bucket, archi
                 'Parameters': {'classification': 'csv'}
             }
         )
-        print(f"Tabla {glue_table_name} registrada exitosamente en la base de datos {glue_database}.")
+        logger.info(f"Tabla {glue_table_name} registrada exitosamente en la base de datos {glue_database}.")
+    except glue.exceptions.AlreadyExistsException:
+        logger.warning(f"La tabla {glue_table_name} ya existe en la base de datos {glue_database}.")
     except Exception as e:
-        print(f"Error al registrar la tabla en Glue: {e}")
-
+        logger.error(f"Error al registrar la tabla en Glue: {e}")
 
 if __name__ == "__main__":
+    logger.info("Inicio del proceso de ingesta.")
     if crear_base_de_datos_en_glue(glue_database):
         exportar_dynamodb_a_csv(tabla_dynamo, archivo_csv)
 
         if subir_csv_a_s3(archivo_csv, nombre_bucket):
             registrar_datos_en_glue(glue_database, glue_table_name, nombre_bucket, archivo_csv)
         else:
-            print("No se pudo completar el proceso porque hubo un error al subir el archivo a S3.")
+            logger.error("No se pudo completar el proceso porque hubo un error al subir el archivo a S3.")
     else:
-        print("Error en la creación de la base de datos Glue. No se continuará con el proceso.")
+        logger.error("Error en la creación de la base de datos Glue. No se continuará con el proceso.")
 
+    logger.info("Fin del proceso de ingesta.")
     print("Proceso completado.")
