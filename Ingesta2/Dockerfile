@@ -7,4 +7,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . /app/
 
-ENTRYPOINT ["python", "./ingesta2.py"]
+# Ensure the logs directory exists
+RUN mkdir -p /app/logs
+
+# Set the entrypoint to dynamically receive the script name
+ENTRYPOINT ["python"]
+CMD ["ingesta2.py"]

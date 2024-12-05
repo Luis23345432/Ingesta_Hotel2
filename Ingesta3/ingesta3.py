@@ -3,6 +3,8 @@ import csv
 import os
 import time
 import argparse
+import logging
+from datetime import datetime
 
 # Configuración de argparse para obtener parámetros
 parser = argparse.ArgumentParser(description='Script para ejecutar la ingesta de datos')
@@ -17,18 +19,46 @@ args = parser.parse_args()
 # Usamos los valores de los argumentos
 stage = args.stage
 nombre_bucket = args.bucket
+container_name = "ingesta3"
 
+# Configurar el directorio y archivo de logs
+log_directory = "/app/logs"
+os.makedirs(log_directory, exist_ok=True)
+log_file = os.path.join(log_directory, f"{container_name}.log")
 
+# Configuración de logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s.%(msecs)03d [%(levelname)s] [%(name)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+    handlers=[
+        logging.FileHandler(log_file),
+        logging.StreamHandler()
+    ]
+)
+
+logger = logging.getLogger(container_name)
+
+def log_step(message, level="info"):
+    """Helper to log steps with a unified format."""
+    if level == "info":
+        logger.info(message)
+    elif level == "warning":
+        logger.warning(message)
+    elif level == "error":
+        logger.error(message)
+    elif level == "critical":
+        logger.critical(message)
+
+# Inicialización de recursos AWS
 dynamodb = boto3.resource('dynamodb', region_name='us-east-1')
 s3 = boto3.client('s3', region_name='us-east-1')
 glue = boto3.client('glue', region_name='us-east-1')
 
-tabla_dynamo = f"{stage}-hotel-rooms"  # Tabla de habitaciones
-archivo_csv = f"{stage}-rooms.csv"    # Archivo CSV para habitaciones
-glue_database = f"{stage}-glue-database" # Base de datos de Glue
-glue_table_name = f"{stage}-rooms-table"  # Tabla de Glue
-
-
+tabla_dynamo = f"{stage}-hotel-rooms"
+archivo_csv = f"{stage}-rooms.csv"
+glue_database = f"{stage}-glue-database"
+glue_table_name = f"{stage}-rooms-table"
 
 def limpiar_descripcion(descripcion):
     """Elimina saltos de línea y reemplaza con un espacio."""
@@ -36,15 +66,14 @@ def limpiar_descripcion(descripcion):
         return descripcion.replace('\n', ' ').replace('\r', '')
     return descripcion
 
-
 def exportar_dynamodb_a_csv(tabla_dynamo, archivo_csv):
-    print(f"Exportando datos desde DynamoDB ({tabla_dynamo})...")
+    log_step(f"Exportando datos desde DynamoDB ({tabla_dynamo})...")
     tabla = dynamodb.Table(tabla_dynamo)
     scan_kwargs = {}
+    registros_exportados = 0
 
     with open(archivo_csv, 'w', newline='') as archivo:
         escritor_csv = csv.writer(archivo)
-
         while True:
             respuesta = tabla.scan(**scan_kwargs)
             items = respuesta['Items']
@@ -54,76 +83,63 @@ def exportar_dynamodb_a_csv(tabla_dynamo, archivo_csv):
 
             for item in items:
                 try:
-                    room_id = item.get('room_id', '')
-                except ValueError:
-                    room_id = ''
-
-                # Obtener el atributo 'image'
-                image = item.get('image', '')
-
-                # Limpiar la descripción para eliminar saltos de línea
-                description = limpiar_descripcion(item.get('description', ''))
-
-                row = [
-                    item.get('tenant_id', ''),
-                    room_id,
-                    item.get('room_name', ''),
-                    item.get('max_persons', ''),
-                    item.get('room_type', ''),
-                    item.get('price_per_night', ''),
-                    description,  # Usar la descripción limpia
-                    item.get('availability', ''),
-                    item.get('created_at', ''),
-                    image
-                ]
-
-                escritor_csv.writerow(row)
+                    row = [
+                        item.get('tenant_id', ''),
+                        item.get('room_id', ''),
+                        item.get('room_name', ''),
+                        item.get('max_persons', ''),
+                        item.get('room_type', ''),
+                        item.get('price_per_night', ''),
+                        limpiar_descripcion(item.get('description', '')),
+                        item.get('availability', ''),
+                        item.get('created_at', ''),
+                        item.get('image', '')
+                    ]
+                    escritor_csv.writerow(row)
+                    registros_exportados += 1
+                except Exception as e:
+                    log_step(f"Error procesando registro: {e}", level="error")
 
             if 'LastEvaluatedKey' in respuesta:
                 scan_kwargs['ExclusiveStartKey'] = respuesta['LastEvaluatedKey']
             else:
                 break
 
-    print(f"Datos exportados a {archivo_csv}")
-
+    log_step(f"Datos exportados a {archivo_csv} - Total registros: {registros_exportados}")
 
 def subir_csv_a_s3(archivo_csv, nombre_bucket):
     carpeta_destino = 'rooms/'
     archivo_s3 = f"{carpeta_destino}{archivo_csv}"
-    print(f"Subiendo {archivo_csv} al bucket S3 ({nombre_bucket}) en la carpeta 'rooms'...")
+    log_step(f"Subiendo {archivo_csv} al bucket S3 ({nombre_bucket}) en la carpeta 'rooms'...")
 
     try:
         s3.upload_file(archivo_csv, nombre_bucket, archivo_s3)
-        print(f"Archivo subido exitosamente a S3 en la carpeta 'rooms'.")
+        log_step(f"Archivo subido exitosamente a S3 en la carpeta 'rooms'.")
         return True
     except Exception as e:
-        print(f"Error al subir el archivo a S3: {e}")
+        log_step(f"Error al subir el archivo a S3: {e}", level="error")
         return False
 
-
 def crear_base_de_datos_en_glue(glue_database):
-    """Crear base de datos en Glue si no existe."""
     try:
         glue.get_database(Name=glue_database)
-        print(f"La base de datos {glue_database} ya existe.")
+        log_step(f"La base de datos {glue_database} ya existe.")
     except glue.exceptions.EntityNotFoundException:
-        print(f"La base de datos {glue_database} no existe. Creando base de datos...")
+        log_step(f"La base de datos {glue_database} no existe. Creando base de datos...")
         glue.create_database(
             DatabaseInput={
                 'Name': glue_database,
                 'Description': 'Base de datos para almacenamiento de habitaciones en Glue.'
             }
         )
-        print(f"Base de datos {glue_database} creada exitosamente.")
+        log_step(f"Base de datos {glue_database} creada exitosamente.")
     except Exception as e:
-        print(f"Error al verificar o crear la base de datos en Glue: {e}")
+        log_step(f"Error al verificar o crear la base de datos en Glue: {e}", level="error")
         return False
     return True
 
-
 def registrar_datos_en_glue(glue_database, glue_table_name, nombre_bucket, archivo_csv):
-    """Registrar datos en Glue Data Catalog."""
-    print(f"Registrando datos en Glue Data Catalog...")
+    log_step(f"Registrando datos en Glue Data Catalog...")
     input_path = f"s3://{nombre_bucket}/rooms/"
 
     try:
@@ -157,20 +173,23 @@ def registrar_datos_en_glue(glue_database, glue_table_name, nombre_bucket, archi
                 'Parameters': {'classification': 'csv'}
             }
         )
-        print(f"Tabla {glue_table_name} registrada exitosamente en la base de datos {glue_database}.")
+        log_step(f"Tabla {glue_table_name} registrada exitosamente en la base de datos {glue_database}.")
     except Exception as e:
-        print(f"Error al registrar la tabla en Glue: {e}")
-
+        log_step(f"Error al registrar la tabla en Glue: {e}", level="error")
 
 if __name__ == "__main__":
+    start_time = datetime.now()
+    log_step("Inicio del proceso de ingesta.")
+
     if crear_base_de_datos_en_glue(glue_database):
         exportar_dynamodb_a_csv(tabla_dynamo, archivo_csv)
 
         if subir_csv_a_s3(archivo_csv, nombre_bucket):
             registrar_datos_en_glue(glue_database, glue_table_name, nombre_bucket, archivo_csv)
         else:
-            print("No se pudo completar el proceso porque hubo un error al subir el archivo a S3.")
+            log_step("No se pudo completar el proceso porque hubo un error al subir el archivo a S3.", level="error")
     else:
-        print("Error en la creación de la base de datos Glue. No se continuará con el proceso.")
+        log_step("Error en la creación de la base de datos Glue. No se continuará con el proceso.", level="error")
 
-    print("Proceso completado.")
+    end_time = datetime.now()
+    log_step(f"Fin del proceso de ingesta. Duración: {end_time - start_time}.")
